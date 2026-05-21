@@ -1911,12 +1911,37 @@
 
     function getListings() { return listingsCache; }
 
-    async function loadListings() {
-        // Local en premier — instantané, jamais perdu
-        try { listingsCache = JSON.parse(localStorage.getItem('pd_listings') || '[]'); }
-        catch(e) { listingsCache = []; }
-        renderListings();
-        renderAdminList();
+   async function loadListings() {
+    // Chargement local immédiat
+    try {
+        listingsCache = JSON.parse(localStorage.getItem('pd_listings') || '[]');
+    } catch(e) {
+        listingsCache = [];
+    }
+    renderListings();
+    renderAdminList();
+
+    // Synchronisation Supabase (priorité aux données distantes)
+    try {
+        const res = await fetch(SB_URL + '/rest/v1/annonces?id=eq.1&select=data', { 
+            headers: SB_HDR 
+        });
+        
+        if (res.ok) {
+            const rows = await res.json();
+            if (rows && rows[0] && Array.isArray(rows[0].data)) {
+                listingsCache = rows[0].data;
+                localStorage.setItem('pd_listings', JSON.stringify(listingsCache));
+                console.log('✅ Données chargées depuis Supabase');
+            }
+        }
+    } catch(e) {
+        console.warn('Supabase inaccessible → utilisation localStorage');
+    }
+
+    renderListings();
+    renderAdminList();
+}
 
         // Supabase en arrière-plan
         try {
@@ -2239,43 +2264,45 @@
         return document.getElementById('fImg').value.trim();
     }
 
-    function saveListing() {
-        const title = document.getElementById('fTitle').value.trim();
-        const price = document.getElementById('fPrice').value.trim();
-        if (!title || !price) { alert('Le titre et le prix sont obligatoires.'); return; }
-        const listings = getListings();
-        const item = {
-            id:    editingId || genId(),
-            title: title,
-            price: parseFloat(price),
-            cat:   document.getElementById('fCat').value,
-            state: document.getElementById('fState').value,
-            desc:  document.getElementById('fDesc').value.trim(),
-            img:   getImgValue(),
-            stock: document.getElementById('fStock').value !== '' ? parseInt(document.getElementById('fStock').value) : null,
-            wa:    document.getElementById('fWa').value.trim(),
-            pay:   document.getElementById('fPay').value.trim(),
-            sold:  false,
-            date:  new Date().toISOString()
-        };
-        if (editingId) {
-            const i = listings.findIndex(x => x.id === editingId);
-            item.sold = listings[i].sold; // préserver l'état vendu
-            listings[i] = item;
-        } else {
-            listings.unshift(item);
-        }
-        saveListings(listings);
-        cancelAdminForm();
-        renderAdminList();
-        renderListings();
-    }
+   async function saveListings(arr) {
+    listingsCache = arr;
+    localStorage.setItem('pd_listings', JSON.stringify(arr));
+    
+    renderListings();
+    renderAdminList();
 
-    function deleteListing(id) {
-        if (!confirm('Supprimer cette annonce ?')) return;
-        saveListings(getListings().filter(x => x.id !== id));
-        renderAdminList();
-        renderListings();
+    // === SYNCHRONISATION SUPABASE ===
+    try {
+        const response = await fetch(SB_URL + '/rest/v1/annonces?id=eq.1', {
+            method: 'PATCH',
+            headers: SB_HDR,
+            body: JSON.stringify({ data: arr })
+        });
+
+        if (!response.ok) {
+            console.warn('PATCH échoué, tentative PUT...');
+            await fetch(SB_URL + '/rest/v1/annonces?id=eq.1', {
+                method: 'PUT',
+                headers: SB_HDR,
+                body: JSON.stringify({ id: 1, data: arr })
+            });
+        } else {
+            console.log('✅ Sauvegardé et synchronisé sur Supabase');
+        }
+    } catch (e) {
+        console.warn('Supabase hors ligne → données locales uniquement', e);
+    }
+}
+  
+   function deleteListing(id) {
+    if (!confirm('Supprimer définitivement cette annonce ?')) return;
+    
+    let listings = getListings().filter(x => x.id !== id);
+    saveListings(listings);
+    
+    renderAdminList();
+    renderListings();
+}
     }
     function toggleSold(id) {
         const listings = getListings();
